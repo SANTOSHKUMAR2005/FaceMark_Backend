@@ -1,0 +1,6 @@
+.env
+gcs-key.json
+uploads/
+__pycache__/
+venv/
+.venv
