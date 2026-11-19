@@ -45,3 +45,9 @@ def student_only(user: User = Depends(current_user)) -> User:
     if user.role != "student":
         raise HTTPException(403, "Students only.")
     return user
+
+
+def admin_only(user: User = Depends(current_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(403, "Admins only.")
+    return user

@@ -28,3 +28,9 @@ def validate_group(start_year: int, degree: str, department: str, section: str):
         raise HTTPException(400, "Choose a valid section.")
     if not (this_year - 8 <= start_year <= this_year + 1):
         raise HTTPException(400, "Choose a valid batch start year.")
+
+
+def semester_start_date(start_year: int, semester: int) -> date:
+    """First day of a semester for a batch (semester 1 starts in ACADEMIC_YEAR_START_MONTH of start_year)."""
+    offset = (semester - 1) * 6 + ACADEMIC_YEAR_START_MONTH - 1
+    return date(start_year + offset // 12, offset % 12 + 1, 1)

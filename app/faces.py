@@ -3,7 +3,7 @@ import io
 import numpy as np
 import face_recognition
 from PIL import Image, ImageOps
-from .config import FACE_TOLERANCE
+from .config import FACE_TOLERANCE, FACE_MIN_AREA_RATIO
 
 
 def _load(data: bytes) -> np.ndarray:
@@ -18,6 +18,11 @@ def encode_profile_photo(data: bytes) -> list:
     locations = face_recognition.face_locations(arr)
     if len(locations) != 1:
         raise ValueError(f"Expected exactly 1 face but found {len(locations)}.")
+    top, right, bottom, left = locations[0]
+    height, width = arr.shape[:2]
+    ratio = ((bottom - top) * (right - left)) / (height * width)
+    if ratio < FACE_MIN_AREA_RATIO:
+        raise ValueError(f"Your face covers only {ratio * 100:.0f}% of the photo. Move closer so your face fills most of the frame.")
     return [round(float(x), 6) for x in face_recognition.face_encodings(arr, locations)[0]]
 
 

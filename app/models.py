@@ -10,7 +10,7 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(10), nullable=False)  # "teacher" | "student"
+    role = Column(String(10), nullable=False)  # "teacher" | "student" | "admin"
     name = Column(String(100), nullable=False)
     is_verified = Column(Boolean, nullable=False, default=False)  # email confirmed with a code
     student = relationship("Student", back_populates="user", uselist=False)
@@ -40,26 +40,34 @@ class Student(Base):
     department = Column(String(100))
     section = Column(String(10))
     phone = Column(String(20))
+    profile_submitted_at = Column(DateTime)        # set when the profile is submitted; it is then locked for the student
     photos_semester = Column(Integer)              # semester in which the photos were last updated
-    photo_paths = Column(Text, default="[]")   # JSON list of GCS object names
-    encodings = Column(Text, default="[]")     # JSON list of 128-number face encodings
+    photo_paths = Column(Text, default="[]")       # JSON list of GCS object names
+    encodings = Column(Text, default="[]")         # JSON list of 128-number face encodings
     user = relationship("User", back_populates="student")
 
 
 class Classroom(Base):
+    """One subject taught by one teacher to one or more cohorts (batch + degree + semester + section)."""
     __tablename__ = "classrooms"
     id = Column(Integer, primary_key=True)
     teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    name = Column(String(255), nullable=False)      # auto label: degree, department, batch, section
     subject = Column(String(100), nullable=False)
-    batch_start_year = Column(Integer, nullable=False)
-    degree = Column(String(30), nullable=False)
-    department = Column(String(100), nullable=False)
-    section = Column(String(10), nullable=False)
-    semester = Column(Integer, nullable=False)
+    department = Column(String(100), nullable=False)   # same branch for every cohort of the class
     created_at = Column(DateTime, default=datetime.utcnow)
     teacher = relationship("User")
+    cohorts = relationship("ClassCohort", cascade="all, delete-orphan", order_by="ClassCohort.id")
     sessions = relationship("AttendanceSession", cascade="all, delete-orphan")
+
+
+class ClassCohort(Base):
+    __tablename__ = "class_cohorts"
+    id = Column(Integer, primary_key=True)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
+    batch_start_year = Column(Integer, nullable=False)
+    degree = Column(String(30), nullable=False)
+    semester = Column(Integer, nullable=False)         # each batch can be in a different semester
+    section = Column(String(10), nullable=False)
 
 
 class AttendanceSession(Base):

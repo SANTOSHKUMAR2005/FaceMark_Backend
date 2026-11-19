@@ -42,15 +42,20 @@ class ResetIn(BaseModel):
 def _email(raw: str) -> str:
     return raw.strip().lower()
 
-def _domain_ok(email : str) -> bool :
-    if not ALLOWED_EMAIL_DOMAINS:
-        return True
-    return email.rsplit("@",1)[-1] in ALLOWED_EMAIL_DOMAINS
 
-def _require_domain(email : str):
+def _domain_ok(email: str) -> bool:
+    """Exact domain match: 'a@college.edu' passes, 'a@evil-college.edu' and 'a@x.college.edu' do not."""
+    if email.count("@") != 1 or not all(email.split("@")):
+        return False
+    return not ALLOWED_EMAIL_DOMAINS or email.split("@")[1] in ALLOWED_EMAIL_DOMAINS
+
+
+def _require_domain(email: str):
     if not _domain_ok(email):
-        allowed=", ".join("@" + d for d in ALLOWED_EMAIL_DOMAINS)
-        raise HTTPException(400, f"Only college email address are allowed.")
+        if ALLOWED_EMAIL_DOMAINS:
+            raise HTTPException(400, "Only " + " or ".join("@" + d for d in ALLOWED_EMAIL_DOMAINS) + " email addresses can be used.")
+        raise HTTPException(400, "Enter a valid email address.")
+
 
 def _token_response(user: User):
     return {"token": create_token(user), "role": user.role, "name": user.name}
@@ -67,7 +72,6 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(403, "Wrong teacher signup code.")
     email = _email(body.email)
     _require_domain(email)
-
     old = db.query(User).filter(User.email == email).first()
     if old and old.is_verified:
         raise HTTPException(400, "This email is already registered. Try logging in.")
@@ -102,16 +106,15 @@ def verify_email(body: VerifyIn, db: Session = Depends(get_db)):
 def resend_verification(body: EmailIn, db: Session = Depends(get_db)):
     email = _email(body.email)
     user = db.query(User).filter(User.email == email).first()
-    if _domain_ok(email) and user and not user.is_verified:
+    if user and not user.is_verified and _domain_ok(email):
         issue_code(db, email, "verify")
     return {"message": "If this email needs verification, a new code has been sent."}
 
 
 @router.post("/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
-    email = _email(body.email)
-    _require_domain(email)
-    user = db.query(User).filter(User.email == email).first()
+    _require_domain(_email(body.email))
+    user = db.query(User).filter(User.email == _email(body.email)).first()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Wrong email or password.")
     if user.role != body.role:
@@ -132,7 +135,7 @@ def forgot_password(body: EmailIn, db: Session = Depends(get_db)):
     """Always gives the same answer, so nobody can use it to find out which emails are registered."""
     email = _email(body.email)
     user = db.query(User).filter(User.email == email).first()
-    if _domain_ok(email) and user and user.is_verified:
+    if user and user.is_verified and _domain_ok(email):
         try:
             issue_code(db, email, "reset")
         except HTTPException as e:

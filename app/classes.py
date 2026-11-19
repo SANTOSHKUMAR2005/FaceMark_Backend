@@ -4,22 +4,29 @@ from typing import List
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from .database import get_db
-from .models import User, Student, Classroom, AttendanceSession, AttendanceRecord
+from .models import User, Student, Classroom, ClassCohort, AttendanceSession, AttendanceRecord
 from .security import teacher_only
 from . import faces, academic
+from .options import DEPARTMENTS
 
 router = APIRouter(prefix="/classes", tags=["classes"])
+MAX_COHORTS = 8
+
+
+class CohortIn(BaseModel):
+    batch_start_year: int
+    degree: str
+    semester: int
+    section: str
 
 
 class ClassIn(BaseModel):
     subject: str
-    batch_start_year: int
-    degree: str
     department: str
-    semester: int
-    section: str
+    cohorts: List[CohortIn]
 
 
 class SubmitIn(BaseModel):
@@ -34,29 +41,41 @@ def _own_class(class_id: int, teacher: User, db: Session) -> Classroom:
 
 
 def _roster(c: Classroom, db: Session) -> List[Student]:
-    """Students of the class's batch, degree, department and section who have face data."""
-    q = db.query(Student).filter(
-        Student.batch_start_year == c.batch_start_year, Student.degree == c.degree,
-        Student.department == c.department, Student.section == c.section).order_by(Student.roll_number)
+    """Students of this department who belong to ANY cohort of the class and have face data."""
+    if not c.cohorts:
+        return []
+    match = [and_(Student.batch_start_year == k.batch_start_year, Student.degree == k.degree,
+                  Student.section == k.section) for k in c.cohorts]
+    q = db.query(Student).filter(Student.department == c.department, or_(*match)).order_by(Student.roll_number)
     return [s for s in q if json.loads(s.encodings or "[]")]
 
 
 def _out(c: Classroom):
-    return {"id": c.id, "name": c.name, "subject": c.subject, "semester": c.semester,
-            "batch_start_year": c.batch_start_year, "degree": c.degree, "department": c.department,
-            "section": c.section, "batch_label": academic.batch_label(c.batch_start_year, c.degree)}
+    cohorts = [{"id": k.id, "batch_start_year": k.batch_start_year, "degree": k.degree, "semester": k.semester,
+                "section": k.section, "batch_label": academic.batch_label(k.batch_start_year, k.degree)}
+               for k in c.cohorts]
+    label = "; ".join(f"{k['degree']} {k['batch_label']}, Sem {k['semester']}, Sec {k['section']}" for k in cohorts)
+    return {"id": c.id, "subject": c.subject, "department": c.department, "cohorts": cohorts, "label": label}
 
 
 @router.post("")
 def create_class(body: ClassIn, teacher: User = Depends(teacher_only), db: Session = Depends(get_db)):
-    academic.validate_group(body.batch_start_year, body.degree, body.department, body.section)
-    if not (1 <= body.semester <= academic.total_semesters(body.degree)):
-        raise HTTPException(400, f"{body.degree} has semesters 1 to {academic.total_semesters(body.degree)}.")
-    label = (f"{body.degree}, {body.department}, Batch {academic.batch_label(body.batch_start_year, body.degree)}, "
-             f"Section {body.section}")
-    c = Classroom(teacher_id=teacher.id, name=label, subject=body.subject.strip(), semester=body.semester,
-                  batch_start_year=body.batch_start_year, degree=body.degree,
-                  department=body.department, section=body.section)
+    if body.department not in DEPARTMENTS:
+        raise HTTPException(400, "Choose a valid department.")
+    if not (1 <= len(body.cohorts) <= MAX_COHORTS):
+        raise HTTPException(400, f"Add 1 to {MAX_COHORTS} batches.")
+    seen = set()
+    for k in body.cohorts:
+        academic.validate_group(k.batch_start_year, k.degree, body.department, k.section)
+        if not (1 <= k.semester <= academic.total_semesters(k.degree)):
+            raise HTTPException(400, f"{k.degree} has semesters 1 to {academic.total_semesters(k.degree)}.")
+        key = (k.batch_start_year, k.degree, k.section)
+        if key in seen:
+            raise HTTPException(400, "The same batch, degree and section is added twice.")
+        seen.add(key)
+    c = Classroom(teacher_id=teacher.id, subject=body.subject.strip(), department=body.department)
+    c.cohorts = [ClassCohort(batch_start_year=k.batch_start_year, degree=k.degree, semester=k.semester,
+                             section=k.section) for k in body.cohorts]
     db.add(c)
     db.commit()
     return _out(c)
@@ -74,10 +93,15 @@ def delete_class(class_id: int, teacher: User = Depends(teacher_only), db: Sessi
     return {"ok": True}
 
 
+def _student_out(s: Student):
+    return {"id": s.id, "name": s.name, "roll_number": s.roll_number, "degree": s.degree,
+            "batch_label": academic.batch_label(s.batch_start_year, s.degree)}
+
+
 @router.get("/{class_id}/students")
 def roster(class_id: int, teacher: User = Depends(teacher_only), db: Session = Depends(get_db)):
     c = _own_class(class_id, teacher, db)
-    return {"class": _out(c), "students": [{"id": s.id, "name": s.name, "roll_number": s.roll_number} for s in _roster(c, db)]}
+    return {"class": _out(c), "students": [_student_out(s) for s in _roster(c, db)]}
 
 
 @router.post("/{class_id}/recognize")
@@ -122,5 +146,5 @@ def recent_attendance(class_id: int, teacher: User = Depends(teacher_only), db: 
             marks[(r.student_id, ss.date.isoformat())] = r.present
     students = db.query(Student).filter(Student.id.in_({k[0] for k in marks})).order_by(Student.roll_number).all()
     return {"class": _out(c), "dates": [d.isoformat() for d in days],
-            "students": [{"id": s.id, "name": s.name, "roll_number": s.roll_number,
-                          "marks": {d.isoformat(): marks.get((s.id, d.isoformat())) for d in days}} for s in students]}
+            "students": [{**_student_out(s), "marks": {d.isoformat(): marks.get((s.id, d.isoformat())) for d in days}}
+                         for s in students]}
